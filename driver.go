@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/docker/docker/api/types/backend"
 	"github.com/docker/docker/api/types/plugins/logdriver"
 	"github.com/docker/docker/daemon/logger"
 	"github.com/docker/docker/daemon/logger/jsonfilelog"
@@ -103,7 +104,14 @@ func consumeLog(lf *logPair) {
 		var msg logger.Message
 		msg.Line = buf.Line
 		msg.Source = buf.Source
-		msg.Partial = buf.Partial
+		if buf.Partial {
+			partial := buf.PartialLogMetadata
+			msg.PLogMetaData = &backend.PartialLogMetaData{
+				ID:      partial.GetId(),
+				Last:    partial.GetLast(),
+				Ordinal: int(partial.GetOrdinal()),
+			}
+		}
 		msg.Timestamp = time.Unix(0, buf.TimeNano)
 
 		if err := lf.l.Log(&msg); err != nil {
@@ -134,7 +142,7 @@ func (d *driver) ReadLogs(info logger.Info, config logger.ReadConfig) (io.ReadCl
 
 		enc := protoio.NewUint32DelimitedWriter(w, binary.BigEndian)
 		defer enc.Close()
-		defer watcher.Close()
+		defer watcher.ProducerGone()
 
 		var buf logdriver.LogEntry
 		for {
@@ -146,7 +154,13 @@ func (d *driver) ReadLogs(info logger.Info, config logger.ReadConfig) (io.ReadCl
 				}
 
 				buf.Line = msg.Line
-				buf.Partial = msg.Partial
+				buf.Partial = msg.PLogMetaData != nil
+				if buf.Partial {
+					partial := buf.PartialLogMetadata
+					partial.Id = msg.PLogMetaData.ID
+					partial.Last = msg.PLogMetaData.Last
+					partial.Ordinal = int32(msg.PLogMetaData.Ordinal)
+				}
 				buf.TimeNano = msg.Timestamp.UnixNano()
 				buf.Source = msg.Source
 
