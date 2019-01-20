@@ -32,6 +32,16 @@ type logPair struct {
 	l      logger.Logger
 	stream io.ReadCloser
 	info   logger.Info
+	done   chan struct{}
+}
+
+func (lf *logPair) isDone() bool {
+	select {
+	case <-lf.done:
+		return true
+	default:
+		return false
+	}
 }
 
 func newDriver() *driver {
@@ -67,7 +77,7 @@ func (d *driver) StartLogging(file string, logCtx logger.Info) error {
 	}
 
 	d.mu.Lock()
-	lf := &logPair{l, f, logCtx}
+	lf := &logPair{l, f, logCtx, make(chan struct{})}
 	d.logs[file] = lf
 	d.idx[logCtx.ContainerID] = lf
 	d.mu.Unlock()
@@ -81,7 +91,7 @@ func (d *driver) StopLogging(file string) error {
 	d.mu.Lock()
 	lf, ok := d.logs[file]
 	if ok {
-		lf.stream.Close()
+		close(lf.done)
 		delete(d.logs, file)
 	}
 	d.mu.Unlock()
@@ -93,14 +103,22 @@ func consumeLog(lf *logPair) {
 	defer dec.Close()
 	var buf logdriver.LogEntry
 	for {
+		if lf.isDone() {
+			logrus.WithField("id", lf.info.ContainerID).Debug("shutting down log logger")
+			lf.stream.Close()
+			return
+		}
+
 		if err := dec.ReadMsg(&buf); err != nil {
 			if err == io.EOF {
-				logrus.WithField("id", lf.info.ContainerID).WithError(err).Debug("shutting down log logger")
+				logrus.WithField("id", lf.info.ContainerID).Debug("shutting down log logger ")
 				lf.stream.Close()
 				return
 			}
+			logrus.WithField("id", lf.info.ContainerID).WithError(err).Error("unknown error")
 			dec = protoio.NewUint32DelimitedReader(lf.stream, binary.BigEndian, 1e6)
 		}
+
 		var msg logger.Message
 		msg.Line = buf.Line
 		msg.Source = buf.Source
