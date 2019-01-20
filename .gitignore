@@ -1,2 +1,2 @@
-rootfs
-docker-log-driver-test
+/docker-log-driver
+/plugin
